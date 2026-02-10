@@ -1,10 +1,23 @@
-import { generateText } from 'ai';
+import { generateObject } from 'ai';
 import { createAnthropic } from '@ai-sdk/anthropic';
+import { z } from 'zod';
 
 // 初始化 Anthropic 客户端
 const anthropic = createAnthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || '',
 });
+
+// 定义 AI 输出的 Zod Schema
+const AnalysisSchema = z.object({
+  ticker: z.string().describe('股票代码'),
+  sentimentScore: z.number().min(0).max(100).describe('情绪分数 0-100'),
+  sentimentColor: z.enum(['red', 'yellow', 'green']).describe('情绪颜色'),
+  summary: z.string().max(200).describe('一句话市场总结'),
+  bullishPoints: z.array(z.string().max(100)).length(3).describe('3个看涨理由'),
+  bearishPoints: z.array(z.string().max(100)).length(3).describe('3个看跌风险'),
+});
+
+type Analysis = z.infer<typeof AnalysisSchema>;
 
 // 智谱 AI 直接 API 调用
 async function callZhipuAI(messages: any[]) {
@@ -36,10 +49,8 @@ async function callZhipuAI(messages: any[]) {
 
     const data = await response.json();
 
-    // 提取响应内容
+    // 清理 Markdown 格式标记
     let content = data.choices?.[0]?.message?.content || '';
-
-    // 清理 Markdown 格式标记（智谱 AI 可能返回的格式）
     content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
 
     return {
@@ -144,16 +155,11 @@ function getMockNews(symbol: string) {
   };
 }
 
-// Mock AI 分析结果（根据 symbol 生成略有不同的结果）
-function getMockAnalysis(symbol: string) {
-  // 根据 symbol 的字符生成伪随机但稳定的结果
+// Mock AI 分析结果（备用）
+function getMockAnalysis(symbol: string): Analysis {
   const hash = symbol.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
   const baseScore = 50 + (hash % 41); // 50-91
-  const sentimentLabels = ['极度恐慌', '恐慌', '中性偏空', '中性', '中性偏多', '贪婪', '极度贪婪'];
-  const sentimentIndex = Math.floor((baseScore - 1) / 15);
-  const sentimentLabel = sentimentLabels[Math.min(sentimentIndex, 6)];
 
-  // 基础利好因素
   const bullishOptions = [
     `${symbol} 营收超预期，显示公司基本面强劲`,
     '分析师集体上调目标价，市场信心增强',
@@ -163,7 +169,6 @@ function getMockAnalysis(symbol: string) {
     '市场份额稳步提升，竞争优势明显',
   ];
 
-  // 基础风险提示
   const bearishOptions = [
     '行业监管政策可能带来不确定性',
     '竞争对手新产品可能加剧市场竞争',
@@ -173,25 +178,22 @@ function getMockAnalysis(symbol: string) {
     '供应链中断风险需要持续关注',
   ];
 
-  // 根据 hash 选择不同的因素
-  const bullishFactors = [
-    bullishOptions[hash % bullishOptions.length],
-    bullishOptions[(hash + 1) % bullishOptions.length],
-    bullishOptions[(hash + 2) % bullishOptions.length],
-  ];
-
-  const bearishFactors = [
-    bearishOptions[(hash + 3) % bearishOptions.length],
-    bearishOptions[(hash + 4) % bearishOptions.length],
-    bearishOptions[(hash + 5) % bearishOptions.length],
-  ];
-
-  return JSON.stringify({
+  return {
+    ticker: symbol.toUpperCase(),
     sentimentScore: baseScore,
-    sentimentLabel,
-    bullishFactors,
-    bearishFactors,
-  });
+    sentimentColor: baseScore >= 66 ? 'green' : baseScore >= 46 ? 'yellow' : 'red',
+    summary: `${symbol} 当前市场情绪呈现${baseScore >= 66 ? '偏乐观' : '偏谨慎'}态势，建议关注${baseScore >= 66 ? '上行' : '下行'}风险。`,
+    bullishPoints: [
+      bullishOptions[hash % bullishOptions.length],
+      bullishOptions[(hash + 1) % bullishOptions.length],
+      bullishOptions[(hash + 2) % bullishOptions.length],
+    ],
+    bearishPoints: [
+      bearishOptions[(hash + 3) % bearishOptions.length],
+      bearishOptions[(hash + 4) % bearishOptions.length],
+      bearishOptions[(hash + 5) % bearishOptions.length],
+    ],
+  };
 }
 
 // 导出 API 路由
@@ -222,34 +224,28 @@ export async function POST(req: Request) {
       // 如果没有有效的 API Key，返回 Mock 数据
       if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === '') {
         console.log('Using mock analysis (no AI API key)');
-        return new Response(getMockAnalysis(symbol), {
+        const mockData = getMockAnalysis(symbol);
+        return new Response(JSON.stringify(mockData), {
           headers: { 'Content-Type': 'application/json' },
         });
       }
 
       // 使用 Anthropic 进行分析
-      const result = await generateText({
+      const result = await generateObject({
         model: anthropic('claude-3-5-sonnet-20241022'),
+        schema: AnalysisSchema,
         system: `你是一个专业的投资分析师，擅长分析股票/加密货币的市场情绪。
 
-你的任务是基于提供的新闻数据，分析该资产的市场情况，并按照以下 JSON 格式返回结果：
+你的任务是基于提供的新闻数据，分析该资产的市场情况，并严格按照以下 JSON 格式返回结果：
 
-\`\`\`json
 {
-  "sentimentScore": 0-100,
-  "sentimentLabel": "极度恐慌" | "恐慌" | "中性偏空" | "中性" | "中性偏多" | "贪婪" | "极度贪婪",
-  "bullishFactors": [
-    "利好因素1",
-    "利好因素2",
-    "利好因素3"
-  ],
-  "bearishFactors": [
-    "风险提示1",
-    "风险提示2",
-    "风险提示3"
-  ]
+  "ticker": "股票代码",
+  "sentimentScore": 0-100 的整数,
+  "sentimentColor": "red" | "yellow" | "green",
+  "summary": "一句话市场总结（最多50字）",
+  "bullishPoints": ["看涨理由1", "看涨理由2", "看涨理由3"],
+  "bearishPoints": ["看跌风险1", "看跌风险2", "看跌风险3"]
 }
-\`\`\`
 
 评分说明：
 - 0-30: 极度恐慌（红色）
@@ -259,7 +255,7 @@ export async function POST(req: Request) {
 - 66-80: 贪婪（浅绿）
 - 81-100: 极度贪婪（深绿）
 
-请确保返回完整的 JSON 格式，不要添加任何额外文字。`,
+请严格按照以上 JSON 格式返回，不要添加任何额外文字。`,
         messages: [
           {
             role: 'user',
@@ -273,7 +269,7 @@ ${JSON.stringify(newsData, null, 2)}
       });
 
       // 返回 JSON 响应
-      return new Response(result.text, {
+      return new Response(JSON.stringify(result.object), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -282,24 +278,16 @@ ${JSON.stringify(newsData, null, 2)}
     console.log('Using Zhipu AI for analysis');
     const systemPrompt = `你是一个专业的投资分析师，擅长分析股票/加密货币的市场情绪。
 
-你的任务是基于提供的新闻数据，分析该资产的市场情况，并按照以下 JSON 格式返回结果：
+你的任务是基于提供的新闻数据，分析该资产的市场情况，并严格按照以下 JSON 格式返回结果：
 
-\`\`\`json
 {
-  "sentimentScore": 0-100,
-  "sentimentLabel": "极度恐慌" | "恐慌" | "中性偏空" | "中性" | "中性偏多" | "贪婪" | "极度贪婪",
-  "bullishFactors": [
-    "利好因素1",
-    "利好因素2",
-    "利好因素3"
-  ],
-  "bearishFactors": [
-    "风险提示1",
-    "风险提示2",
-    "风险提示3"
-  ]
+  "ticker": "股票代码",
+  "sentimentScore": 0-100 的整数,
+  "sentimentColor": "red" | "yellow" | "green",
+  "summary": "一句话市场总结（最多50字）",
+  "bullishPoints": ["看涨理由1", "看涨理由2", "看涨理由3"],
+  "bearishPoints": ["看跌风险1", "看跌风险2", "看跌风险3"]
 }
-\`\`\`
 
 评分说明：
 - 0-30: 极度恐慌（红色）
@@ -309,7 +297,7 @@ ${JSON.stringify(newsData, null, 2)}
 - 66-80: 贪婪（浅绿）
 - 81-100: 极度贪婪（深绿）
 
-请确保返回完整的 JSON 格式，不要添加任何额外文字。`;
+请严格按照以上 JSON 格式返回，不要添加任何额外文字。`;
 
     const messages = [
       { role: 'system', content: systemPrompt },
@@ -323,10 +311,20 @@ ${JSON.stringify(newsData, null, 2)}
       },
     ];
 
-    const result = await callZhipuAI(messages);
+    const zhipuResult = await callZhipuAI(messages);
+
+    // 解析智谱 AI 的 JSON 响应
+    let parsedData: Analysis;
+    try {
+      parsedData = JSON.parse(zhipuResult.text);
+    } catch (parseError) {
+      console.error('Failed to parse Zhipu AI response:', parseError);
+      // 如果解析失败，使用 Mock 数据
+      parsedData = getMockAnalysis(symbol);
+    }
 
     // 返回 JSON 响应
-    return new Response(result.text, {
+    return new Response(JSON.stringify(parsedData), {
       headers: { 'Content-Type': 'application/json' },
     });
   } catch (error) {
@@ -334,7 +332,8 @@ ${JSON.stringify(newsData, null, 2)}
 
     // 如果 AI 调用失败，返回 Mock 数据作为降级处理
     console.log(`AI call failed, using mock data as fallback for ${symbol}`);
-    return new Response(getMockAnalysis(symbol), {
+    const mockData = getMockAnalysis(symbol);
+    return new Response(JSON.stringify(mockData), {
       headers: { 'Content-Type': 'application/json' },
     });
   }
