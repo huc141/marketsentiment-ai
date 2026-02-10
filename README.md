@@ -1,5 +1,6 @@
 用户输入一个股票代码（如 BTC 或 600519），系统自动抓取最近 24 小时的 10 条重磅新闻，并用 AI 分析出目前的“市场情绪指数（0-100）”和“主要风险点”。
-![Uploading 2026-02-10T04-17-08.377Z.png…]()
+
+<img width="1920" height="1387" alt="2026-02-10T04-17-08 377Z" src="https://github.com/user-attachments/assets/1880f579-9a49-4d5d-88d4-c1c24abd028b" />
 
 
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
